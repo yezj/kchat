@@ -12,6 +12,7 @@ from mongoengine import connect
 
 
 class Connection(object):
+    _connects = dict()
     _conns = set()
     _buffer = b''
 
@@ -25,10 +26,12 @@ class Connection(object):
         self._stream.set_close_callback(self.on_close)
         self.read_message()
         self.rooms = {}
+        self.conns = {}
+        self.user_id = None
         print address, "A new user has entered the chat room."
 
     def open(self, client):
-        print 'self._conns', self._conns
+        print 'self._connects', self._connects
         self.authenticated = False
         self._conns.add(client)
 
@@ -59,20 +62,32 @@ class Connection(object):
         #         print 11111, self._buffer
         msg = json.loads(data)
         msg_type = msg['msg']
-        print 'msg_type', msg_type
+        print 'msg_type', msg_type, msg
         # if not self.authenticated and msg_type != 'auth':
         #     self.send_error('authentication required')
         #     return
 
         if msg_type == 'auth':
-            self.handle_auth(msg)
-            return
+            # self.handle_auth(msg)
+            self.handle_login(msg)
+
         elif msg_type == 'join_room':
             # ... other handlers
             pass
         elif msg_type == 'create_room':
-            self.__rh.create_room(self, self._conns, self._server.db, msg)
+            self.__rh.create_room(self, msg)
             pass
+        self.read_message()
+
+    def handle_login(self, msg):
+        user_id = msg['uid']
+        if user_id is None:
+            self.send_error('invalid token')
+            return
+        self.authenticated = True
+        self.user_id = user_id
+        self._connects[user_id] = self
+        self.send_room_list()
 
     def handle_auth(self, msg):
         # user_id = decrypt_token(msg['token'])
@@ -89,6 +104,10 @@ class Connection(object):
     def on_close(self):
         print self._address, "A user has left the chat room."
         self._conns.remove(self)
+        self._connects = dict()
+
+    def send_room_list(self):
+        self.send_message('111\n')
 
 
 class RoomHandler(object):
@@ -100,11 +119,11 @@ class RoomHandler(object):
         self.roomates = {}  # store a set for each room, each contains the connections of the clients in the room.
 
     @staticmethod
-    def create_room(self, conns, db, msg):
-        print conns, db, msg
+    def create_room(self, msg):
+        print self.user_id, self._connects, self._server.db, msg
         users = msg['users']
-        #db.room.insert({'room_id': 'room_' + '_'.join([str(u) for u in users]), 'users': users, 'created_time': int(time.time())})
 
+        # db.rooms.insert({'room_id': 'room_' + '_'.join([str(u) for u in users]), 'users': users, 'created_time': int(time.time())})
 
     def add_roomnick(self, room, nick):
         """Add nick to room. Return generated clientID"""
