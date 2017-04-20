@@ -24,11 +24,17 @@ for res in socket.getaddrinfo(HOST, PORT, socket.AF_UNSPEC, socket.SOCK_STREAM):
 if s is None:
     print 'could not open socket'
     sys.exit(1)
-auth_msg = {'msg': 'auth', 'uid': 1, 'title': '', 'tag': '', 'type': 'room'}
+auth_msg = {'msg': 'auth', 'uid': '1', 'title': '', 'tag': '', 'type': 'room'}
 s.sendall(json.dumps(auth_msg))
 s.sendall('\n')
 data = s.recv(1024)
-print data == '111\n'
+print data
+auth_msg = {'msg': 'broadcast', 'room_id': '58f8236f1f21ab07da66434e', 'title': '', 'tag': '', 'type': 'room'}
+s.sendall(json.dumps(auth_msg))
+s.sendall('\n')
+data = s.recv(1024)
+print data
+
 if data == '111\n':
     print 'send'
     msg = {'msg': 'create_room', 'users': ['1', '2'], 'title': '', 'tag': '', 'type': 'room'}

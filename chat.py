@@ -8,7 +8,8 @@ from struct import unpack
 from tornado.tcpserver import TCPServer
 from tornado.ioloop import IOLoop
 from tornado.options import options, parse_config_file, parse_command_line
-from mongoengine import connect
+from pymongo import MongoClient
+from bson import ObjectId
 
 
 class Connection(object):
@@ -19,15 +20,17 @@ class Connection(object):
     def __init__(self, server, stream, address):
         # Connection._conns.add(self)
         self.open(self)
-        self.__rh = RoomHandler
-        self._server = server
+        self.server = server
+        self.db = server.db
         self._stream = stream
         self._address = address
         self._stream.set_close_callback(self.on_close)
         self.read_message()
         self.rooms = {}
+        self.roomates = {}
         self.conns = {}
-        self.user_id = None
+        self.__rh = RoomHandler
+        self.__rh.init_roomates(self)
         print address, "A new user has entered the chat room."
 
     def open(self, client):
@@ -77,6 +80,10 @@ class Connection(object):
         elif msg_type == 'create_room':
             self.__rh.create_room(self, msg)
             pass
+        elif msg_type == 'broadcast':
+            self.handle_broadcast(msg)
+            pass
+
         self.read_message()
 
     def handle_login(self, msg):
@@ -85,9 +92,9 @@ class Connection(object):
             self.send_error('invalid token')
             return
         self.authenticated = True
-        self.user_id = user_id
         self._connects[user_id] = self
-        self.send_room_list()
+        self.__rh.get_user_rooms(self, user_id)
+        # self.send_room_list()
 
     def handle_auth(self, msg):
         # user_id = decrypt_token(msg['token'])
@@ -98,7 +105,13 @@ class Connection(object):
         self.authenticated = True
         self.send_room_list()
 
+    def handle_broadcast(self, msg):
+        if 'room_id' in msg:
+            room_id = msg['room_id']
+            self.__rh.broadcast_room(self, room_id)
+
     def send_message(self, data):
+        data += '\n'
         self._stream.write(data)
 
     def on_close(self):
@@ -112,18 +125,50 @@ class Connection(object):
 
 class RoomHandler(object):
     """Store data about connections, rooms, which users are in which rooms, etc."""
+    client_info = {}  # for each client id we'll store  {'wsconn': wsconn, 'room':room, 'nick':nick}
+    room_info = {}  # dict  to store a list of  {'cid':cid, 'nick':nick , 'wsconn': wsconn} for each room
+    roomates = {}  # store a set for each room, each contains the connections of the clients in the room.
 
-    def __init__(self):
-        self.client_info = {}  # for each client id we'll store  {'wsconn': wsconn, 'room':room, 'nick':nick}
-        self.room_info = {}  # dict  to store a list of  {'cid':cid, 'nick':nick , 'wsconn': wsconn} for each room
-        self.roomates = {}  # store a set for each room, each contains the connections of the clients in the room.
+    @staticmethod
+    def init_roomates(handle):
+        handle.roomates = handle.db.rooms.find({}, {'_id': 1, 'users': 1})
+
+    @staticmethod
+    def update_roomates(handle):
+        handle.init_roomates()
+
+    @staticmethod
+    def get_user_rooms(handle, user_id):
+        user_rooms = handle.db.rooms.find({}, {'_id': 1, 'users': 1})
+        user_rooms = map(lambda x: {str(x['_id']): x['users']}, user_rooms)
+        handle._connects[user_id].send_message(json.dumps(dict(user_rooms=user_rooms)))
+
+    @staticmethod
+    def get_all_rooms(handle):
+        pass
+
+    @staticmethod
+    def broadcast_room(handle, room_id):
+        msg = {'msg': 'broadcast', 'content': 'hello'}
+        print handle._connects
+        room = handle.db.rooms.find_one({'_id': ObjectId(room_id)})
+        if room:
+            for user_id in room['users']:
+                handle._connects[user_id].send_message(json.dumps(dict(msg=msg)))
 
     @staticmethod
     def create_room(self, msg):
-        print self.user_id, self._connects, self._server.db, msg
-        users = msg['users']
-
-        # db.rooms.insert({'room_id': 'room_' + '_'.join([str(u) for u in users]), 'users': users, 'created_time': int(time.time())})
+        # print self.user_id, self._connects, self._server.db, msg
+        users = [str(one) for one in msg['users']]
+        room_id = 'room_' + '_'.join([str(u) for u in set(users)])
+        rooms = self._server.db.rooms.find({'room_id': room_id})
+        if rooms:
+            msg = 'room aleady exist\n'
+        else:
+            self._server.db.rooms.insert({'room_id': str(room_id), 'users': users, 'created_time': int(time.time())})
+            msg = json.dumps({'room_id': room_id})
+            msg += '\n'
+        self._connects[self.user_id].send_message(msg)
 
     def add_roomnick(self, room, nick):
         """Add nick to room. Return generated clientID"""
@@ -234,17 +279,15 @@ class RoomHandler(object):
 
 class ChatServer(TCPServer):
     def __init__(self, *args, **kwargs):
-        db = self.set_up_db(conf.mongodb_host)
-        self.db = db
+        self.db = self.set_up_db(conf.mongodb_host, conf.mongodb_port)
         super(ChatServer, self).__init__(*args, **kwargs)
 
     @staticmethod
-    def set_up_db(host):
-        logging.info("Connecting to database %s ...", host)
-        client = connect('chat', host=host)
-        # client['admin'].authenticate('root', 'qwer1234')
+    def set_up_db(host, port):
+        logging.info("Connecting to database %s:%s ...", host, port)
+        client = MongoClient(host=host, port=port)
         logging.info("Database connected. Seems good.")
-        return client
+        return client.chat
 
     def handle_stream(self, stream, address):
         Connection(self, stream, address)
